@@ -3,11 +3,13 @@ package com.arafawood.api.service;
 import com.arafawood.api.common.ApiException;
 import com.arafawood.api.common.BusinessDates;
 import com.arafawood.api.domain.AppUser;
+import com.arafawood.api.domain.Category;
 import com.arafawood.api.domain.Customer;
 import com.arafawood.api.domain.Item;
 import com.arafawood.api.domain.Payment;
 import com.arafawood.api.domain.SalesOrder;
 import com.arafawood.api.domain.SalesOrderItem;
+import com.arafawood.api.domain.Unit;
 import com.arafawood.api.dto.Dtos.ApproveEffect;
 import com.arafawood.api.dto.Dtos.ApproveSaleLineWrite;
 import com.arafawood.api.dto.Dtos.ApproveSaleWrite;
@@ -17,10 +19,12 @@ import com.arafawood.api.dto.Dtos.ReturnSaleWrite;
 import com.arafawood.api.dto.Dtos.SaleDto;
 import com.arafawood.api.dto.Dtos.SaleLineDto;
 import com.arafawood.api.dto.Dtos.SaleWrite;
+import com.arafawood.api.repo.CategoryRepository;
 import com.arafawood.api.repo.CustomerRepository;
 import com.arafawood.api.repo.ItemRepository;
 import com.arafawood.api.repo.PaymentRepository;
 import com.arafawood.api.repo.SalesOrderRepository;
+import com.arafawood.api.repo.UnitRepository;
 import com.arafawood.api.security.CurrentUserService;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -39,6 +43,8 @@ public class SaleService {
     private final SalesOrderRepository sales;
     private final CustomerRepository customers;
     private final ItemRepository items;
+    private final CategoryRepository categories;
+    private final UnitRepository units;
     private final PaymentRepository payments;
     private final SequenceService sequences;
     private final StockService stock;
@@ -51,6 +57,8 @@ public class SaleService {
             SalesOrderRepository sales,
             CustomerRepository customers,
             ItemRepository items,
+            CategoryRepository categories,
+            UnitRepository units,
             PaymentRepository payments,
             SequenceService sequences,
             StockService stock,
@@ -61,6 +69,8 @@ public class SaleService {
         this.sales = sales;
         this.customers = customers;
         this.items = items;
+        this.categories = categories;
+        this.units = units;
         this.payments = payments;
         this.sequences = sequences;
         this.stock = stock;
@@ -123,14 +133,15 @@ public class SaleService {
             }
         }
         BigDecimal surplusCost = settings.decimal("surplus_cost", "0");
-        Item surplusItem = items.findByCode(settings.get("surplus_item_code", "SUR-MSK")).orElse(null);
         Instant occurredAt = BusinessDates.occurredAt(postingDate);
 
         BigDecimal cogs = BigDecimal.ZERO;
         for (SalesOrderItem line : so.getItems()) {
             boolean surplusCatalog = isSurplusItem(line.getItem());
+            BigDecimal cutQty = BigDecimal.ZERO;
             if (surplusCatalog) {
                 line.setCut(false);
+                line.setCutQty(BigDecimal.ZERO);
             } else {
                 ApproveSaleLineWrite choice = choices.get(line.getId());
                 if (choice == null) {
@@ -139,7 +150,21 @@ public class SaleService {
                 if (choice.surplus() && !choice.cut()) {
                     throw ApiException.badRequest("الفائض يتولد بعد القص فقط");
                 }
-                line.setCut(choice.cut());
+                if (choice.cut()) {
+                    cutQty = choice.cutQty() == null ? line.getQty() : choice.cutQty();
+                    if (cutQty.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw ApiException.badRequest("حدد عدد الألواح المقصوصة لـ " + line.getItem().getName());
+                    }
+                    if (cutQty.compareTo(line.getQty()) > 0) {
+                        throw ApiException.badRequest(
+                                line.getItem().getName() + " — عدد الألواح المقصوصة (" + cutQty + ") أكبر من كمية البند (" + line.getQty() + ")");
+                    }
+                    line.setCut(true);
+                    line.setCutQty(cutQty);
+                } else {
+                    line.setCut(false);
+                    line.setCutQty(BigDecimal.ZERO);
+                }
             }
             BigDecimal onHand = stock.onHand(line.getItem().getId());
             if (line.getQty().compareTo(onHand) > 0) {
@@ -153,11 +178,9 @@ public class SaleService {
             stock.moveOut(line.getItem(), "sale", line.getQty(), avg, "sale", so.getId(), occurredAt);
 
             if (!surplusCatalog && choices.get(line.getId()).surplus()) {
-                if (surplusItem == null) {
-                    throw ApiException.badRequest("صنف الفائض مش متعرّف في الإعدادات");
-                }
+                Item surplusItem = resolveSurplusItem(line.getItem());
                 line.setSurplusGenerated(true);
-                stock.moveIn(surplusItem, "surplus_in", line.getQty(), surplusCost, "sale", so.getId(), occurredAt);
+                stock.moveIn(surplusItem, "surplus_in", cutQty, surplusCost, "sale", so.getId(), occurredAt);
             }
         }
         so.setCogs(cogs);
@@ -225,14 +248,18 @@ public class SaleService {
             if (source == null) {
                 throw ApiException.badRequest("بند المرتجع مش على الفاتورة الأصلية");
             }
-            if (source.isCut()) {
-                throw ApiException.badRequest(source.getItem().getName() + " اتقص — مينفعش يرجع");
+            BigDecimal sourceCutQty = source.isCut()
+                    ? (source.getCutQty() != null && source.getCutQty().compareTo(BigDecimal.ZERO) > 0 ? source.getCutQty() : source.getQty())
+                    : BigDecimal.ZERO;
+            BigDecimal unCutQty = source.getQty().subtract(sourceCutQty).max(BigDecimal.ZERO);
+            if (unCutQty.compareTo(BigDecimal.ZERO) <= 0) {
+                throw ApiException.badRequest(source.getItem().getName() + " اتقص بالكامل — مينفعش يرجع");
             }
             BigDecimal used = alreadyReturned.getOrDefault(source.getId(), BigDecimal.ZERO);
-            BigDecimal remaining = source.getQty().subtract(used);
+            BigDecimal remaining = unCutQty.subtract(used).max(BigDecimal.ZERO);
             if (row.qty().compareTo(remaining) > 0) {
                 throw ApiException.badRequest(
-                        source.getItem().getName() + " — المطلوب " + row.qty() + " والمتبقي للرجوع " + remaining);
+                        source.getItem().getName() + " — المطلوب " + row.qty() + " والمتبقي للرجوع (غير المقصوص) " + remaining);
             }
             BigDecimal lineTotal = source.getUnitPrice().multiply(row.qty()).negate();
             BigDecimal lineCogs = source.getUnitCost().multiply(row.qty()).negate();
@@ -247,6 +274,7 @@ public class SaleService {
             copy.setBoardLength(source.getBoardLength());
             copy.setCutLength(source.getCutLength());
             copy.setCut(false);
+            copy.setCutQty(BigDecimal.ZERO);
             copy.setSourceLine(source);
             reversal.getItems().add(copy);
             total = total.add(lineTotal);
@@ -334,9 +362,13 @@ public class SaleService {
             boolean surplusItem = isSurplusItem(line.getItem());
             boolean lineOver = line.getQty().compareTo(onHand) > 0 && "draft".equals(so.getStatus());
             oversell = oversell || lineOver;
+            BigDecimal lineCutQty = line.isCut()
+                    ? (line.getCutQty() != null && line.getCutQty().compareTo(BigDecimal.ZERO) > 0 ? line.getCutQty() : line.getQty())
+                    : BigDecimal.ZERO;
             BigDecimal returnable = BigDecimal.ZERO;
-            if ("approved".equals(so.getStatus()) && "sale".equals(so.getKind()) && !line.isCut()) {
-                returnable = line.getQty().subtract(returned.getOrDefault(line.getId(), BigDecimal.ZERO)).max(BigDecimal.ZERO);
+            if ("approved".equals(so.getStatus()) && "sale".equals(so.getKind())) {
+                BigDecimal unCut = line.getQty().subtract(lineCutQty).max(BigDecimal.ZERO);
+                returnable = unCut.subtract(returned.getOrDefault(line.getId(), BigDecimal.ZERO)).max(BigDecimal.ZERO);
             }
             lines.add(new SaleLineDto(
                     line.getId(),
@@ -354,6 +386,7 @@ public class SaleService {
                     line.getTotal(),
                     line.isSurplusGenerated(),
                     line.isCut(),
+                    lineCutQty,
                     surplusItem,
                     returnable,
                     lineOver));
@@ -426,6 +459,29 @@ public class SaleService {
         payment.setCreatedBy(user);
         payment.setOccurredAt(occurredAt);
         payments.save(payment);
+    }
+
+    private Item resolveSurplusItem(Item source) {
+        String rawCode = "SUR-" + source.getCode();
+        String code = rawCode.length() > 32 ? rawCode.substring(0, 32) : rawCode;
+        return items.findByCode(code).orElseGet(() -> {
+            Category surplusCat = categories.findByName("فائض").orElseGet(() -> {
+                Category c = new Category();
+                c.setName("فائض");
+                return categories.save(c);
+            });
+            Unit pieceUnit = units.findByName("قطعة").orElse(source.getUnit());
+            Item created = new Item();
+            created.setCode(code);
+            created.setName(source.getName());
+            created.setCategory(surplusCat);
+            created.setThickness(source.getThickness());
+            created.setWidth(source.getWidth());
+            created.setLength(null);
+            created.setUnit(pieceUnit);
+            created.setMinQty(BigDecimal.ZERO);
+            return items.save(created);
+        });
     }
 
     private boolean isSurplusItem(Item item) {

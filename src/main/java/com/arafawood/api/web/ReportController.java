@@ -24,13 +24,21 @@ public class ReportController {
     }
 
     @GetMapping("/pnl")
-    public List<PnlRow> pnl() {
-        return reports.pnl();
+    public List<PnlRow> pnl(
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to) {
+        return reports.pnl(from, to);
     }
 
     @GetMapping("/cash")
-    public CashReport cash(@RequestParam(required = false) LocalDate date) {
-        return reports.cash(date);
+    public CashReport cash(
+            @RequestParam(required = false) LocalDate date,
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to) {
+        if (from != null || to != null) {
+            return reports.cash(from, to);
+        }
+        return reports.cash(date, date);
     }
 
     @GetMapping("/aging")
@@ -39,8 +47,10 @@ public class ReportController {
     }
 
     @GetMapping("/item-profit")
-    public List<ItemProfitRow> itemProfit() {
-        return reports.itemProfit();
+    public List<ItemProfitRow> itemProfit(
+            @RequestParam(required = false) LocalDate from,
+            @RequestParam(required = false) LocalDate to) {
+        return reports.itemProfit(from, to);
     }
 
     @GetMapping("/reorder")

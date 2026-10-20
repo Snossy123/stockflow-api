@@ -249,6 +249,8 @@ public class PurchaseService {
                 po.getPaidNow(),
                 po.getTotal().subtract(po.getPaidNow()),
                 po.getTotal(),
+                po.getReversedOf() == null ? null : po.getReversedOf().getId(),
+                po.getReversedOf() == null ? null : po.getReversedOf().getNo(),
                 lines);
     }
 

@@ -5,6 +5,8 @@ import com.arafawood.api.domain.AppUser;
 import com.arafawood.api.domain.Expense;
 import com.arafawood.api.domain.ExpenseType;
 import com.arafawood.api.domain.Item;
+import com.arafawood.api.domain.PurchaseOrder;
+import com.arafawood.api.domain.SalesOrder;
 import com.arafawood.api.domain.StockCount;
 import com.arafawood.api.domain.StockCountLine;
 import com.arafawood.api.domain.StockMovement;
@@ -18,6 +20,8 @@ import com.arafawood.api.dto.Dtos.StockRow;
 import com.arafawood.api.repo.ExpenseRepository;
 import com.arafawood.api.repo.ExpenseTypeRepository;
 import com.arafawood.api.repo.ItemRepository;
+import com.arafawood.api.repo.PurchaseOrderRepository;
+import com.arafawood.api.repo.SalesOrderRepository;
 import com.arafawood.api.repo.StockCountRepository;
 import com.arafawood.api.repo.StockMovementRepository;
 import com.arafawood.api.security.CurrentUserService;
@@ -36,6 +40,8 @@ public class InventoryService {
     private final ItemRepository items;
     private final StockMovementRepository movements;
     private final StockCountRepository counts;
+    private final PurchaseOrderRepository purchases;
+    private final SalesOrderRepository sales;
     private final ExpenseTypeRepository expenseTypes;
     private final ExpenseRepository expenses;
     private final StockService stock;
@@ -48,6 +54,8 @@ public class InventoryService {
             ItemRepository items,
             StockMovementRepository movements,
             StockCountRepository counts,
+            PurchaseOrderRepository purchases,
+            SalesOrderRepository sales,
             ExpenseTypeRepository expenseTypes,
             ExpenseRepository expenses,
             StockService stock,
@@ -58,6 +66,8 @@ public class InventoryService {
         this.items = items;
         this.movements = movements;
         this.counts = counts;
+        this.purchases = purchases;
+        this.sales = sales;
         this.expenseTypes = expenseTypes;
         this.expenses = expenses;
         this.stock = stock;
@@ -91,6 +101,18 @@ public class InventoryService {
             running.put(movement.getItem().getId(), bal);
             after.put(movement.getId(), bal);
         }
+        Map<Long, String> saleNos = new HashMap<>();
+        for (SalesOrder so : sales.findAll()) {
+            saleNos.put(so.getId(), so.getNo());
+        }
+        Map<Long, String> purchaseNos = new HashMap<>();
+        for (PurchaseOrder po : purchases.findAll()) {
+            purchaseNos.put(po.getId(), po.getNo());
+        }
+        Map<Long, String> countNos = new HashMap<>();
+        for (StockCount sc : counts.findAll()) {
+            countNos.put(sc.getId(), sc.getNo());
+        }
         return all.stream()
                 .map(m -> new MovementDto(
                         m.getId(),
@@ -103,8 +125,26 @@ public class InventoryService {
                         m.getUnitCost(),
                         m.getRefType(),
                         m.getRefId(),
+                        resolveRefNo(m.getRefType(), m.getRefId(), saleNos, purchaseNos, countNos),
                         after.get(m.getId())))
                 .toList();
+    }
+
+    private String resolveRefNo(
+            String refType,
+            Long refId,
+            Map<Long, String> saleNos,
+            Map<Long, String> purchaseNos,
+            Map<Long, String> countNos) {
+        if (refType == null || refId == null) {
+            return null;
+        }
+        return switch (refType) {
+            case "sale" -> saleNos.get(refId);
+            case "purchase" -> purchaseNos.get(refId);
+            case "count" -> countNos.get(refId);
+            default -> null;
+        };
     }
 
     @Transactional(readOnly = true)

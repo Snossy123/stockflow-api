@@ -32,7 +32,7 @@ public class AuthController {
     }
 
     @GetMapping("/me")
-    public MeResponse me() {
-        return authService.me();
+    public MeResponse me(HttpServletRequest request) {
+        return authService.me(request);
     }
 }

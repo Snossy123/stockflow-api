@@ -54,6 +54,9 @@ public class SalesOrderItem {
     @Column(nullable = false)
     private boolean cut;
 
+    @Column(name = "cut_qty", nullable = false, precision = 12, scale = 3)
+    private BigDecimal cutQty = BigDecimal.ZERO;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "source_line_id")
     private SalesOrderItem sourceLine;
@@ -148,6 +151,14 @@ public class SalesOrderItem {
 
     public void setCut(boolean cut) {
         this.cut = cut;
+    }
+
+    public BigDecimal getCutQty() {
+        return cutQty;
+    }
+
+    public void setCutQty(BigDecimal cutQty) {
+        this.cutQty = cutQty;
     }
 
     public SalesOrderItem getSourceLine() {

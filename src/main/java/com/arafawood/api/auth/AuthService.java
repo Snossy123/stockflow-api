@@ -10,6 +10,7 @@ import com.arafawood.api.repo.AppUserRepository;
 import com.arafawood.api.repo.LoginEventRepository;
 import com.arafawood.api.repo.PermissionRepository;
 import com.arafawood.api.security.CurrentUserService;
+import com.arafawood.api.service.SettingService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
@@ -34,6 +35,7 @@ public class AuthService {
     private final PermissionRepository permissions;
     private final LoginEventRepository loginEvents;
     private final CurrentUserService currentUser;
+    private final SettingService settings;
 
     public AuthService(
             AuthenticationManager authenticationManager,
@@ -41,13 +43,15 @@ public class AuthService {
             AppUserRepository users,
             PermissionRepository permissions,
             LoginEventRepository loginEvents,
-            CurrentUserService currentUser) {
+            CurrentUserService currentUser,
+            SettingService settings) {
         this.authenticationManager = authenticationManager;
         this.securityContextRepository = securityContextRepository;
         this.users = users;
         this.permissions = permissions;
         this.loginEvents = loginEvents;
         this.currentUser = currentUser;
+        this.settings = settings;
     }
 
     @Transactional
@@ -60,14 +64,15 @@ public class AuthService {
             SecurityContextHolder.setContext(context);
             securityContextRepository.saveContext(context, http, response);
 
+            int timeoutMinutes = resolveTimeoutMinutes();
             HttpSession session = http.getSession(true);
-            session.setMaxInactiveInterval(request.rememberMe() ? 30 * 24 * 60 * 60 : 8 * 60 * 60);
+            session.setMaxInactiveInterval(timeoutMinutes * 60);
 
             AppUser user = users.findByUsername(request.username()).orElseThrow();
             user.setLastLoginAt(Instant.now());
             users.save(user);
             recordLogin(user, request.username(), true);
-            return toMe(user);
+            return toMe(user, timeoutMinutes);
         } catch (BadCredentialsException ex) {
             recordLogin(null, request.username(), false);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "اسم المستخدم أو كلمة المرور غلط");
@@ -84,11 +89,25 @@ public class AuthService {
     }
 
     @Transactional(readOnly = true)
-    public MeResponse me() {
-        return toMe(currentUser.requireUser());
+    public MeResponse me(HttpServletRequest request) {
+        int timeoutMinutes = resolveTimeoutMinutes();
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            session.setMaxInactiveInterval(timeoutMinutes * 60);
+        }
+        return toMe(currentUser.requireUser(), timeoutMinutes);
     }
 
-    private MeResponse toMe(AppUser user) {
+    private int resolveTimeoutMinutes() {
+        try {
+            int val = Integer.parseInt(settings.get("session_timeout_minutes", "30").trim());
+            return Math.max(1, val);
+        } catch (NumberFormatException ex) {
+            return 30;
+        }
+    }
+
+    private MeResponse toMe(AppUser user, int timeoutMinutes) {
         return new MeResponse(
                 user.getId(),
                 user.getName(),
@@ -97,7 +116,8 @@ public class AuthService {
                 user.getRole().getName(),
                 permissions.findByRoleId(user.getRole().getId()).stream()
                         .map(p -> new PermissionDto(p.getResource(), p.getAction()))
-                        .toList());
+                        .toList(),
+                timeoutMinutes);
     }
 
     private void recordLogin(AppUser user, String username, boolean success) {

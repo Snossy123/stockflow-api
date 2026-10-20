@@ -70,14 +70,15 @@ public final class Dtos {
 
     public record PurchaseDto(
             Long id, String no, Long supplierId, String supplierName, LocalDate docDate, LocalDate postingDate,
-            String status, BigDecimal paidNow, BigDecimal remaining, BigDecimal total, List<PurchaseLineDto> items) {}
+            String status, BigDecimal paidNow, BigDecimal remaining, BigDecimal total,
+            Long reversedOfId, String reversedOfNo, List<PurchaseLineDto> items) {}
 
     public record ApproveEffect(String message, Map<String, BigDecimal> numbers) {}
 
     public record SaleWrite(
             Long customerId, LocalDate docDate, String kind, BigDecimal paidNow, List<LineWrite> items) {}
 
-    public record ApproveSaleLineWrite(Long lineId, boolean cut, boolean surplus) {}
+    public record ApproveSaleLineWrite(Long lineId, boolean cut, BigDecimal cutQty, boolean surplus) {}
 
     public record ApproveSaleWrite(List<ApproveSaleLineWrite> lines) {}
 
@@ -89,7 +90,7 @@ public final class Dtos {
             Long id, Long itemId, String itemCode, String itemName, String unitName, BigDecimal onHand,
             String lengthDesc, BigDecimal boardLength, BigDecimal cutLength, BigDecimal qty,
             BigDecimal unitPrice, BigDecimal unitCost, BigDecimal total, boolean surplusGenerated,
-            boolean cut, boolean surplusItem, BigDecimal returnableQty, boolean oversell) {}
+            boolean cut, BigDecimal cutQty, boolean surplusItem, BigDecimal returnableQty, boolean oversell) {}
 
     public record SaleDto(
             Long id, String no, Long customerId, String customerName, LocalDate docDate, LocalDate postingDate,
@@ -114,7 +115,7 @@ public final class Dtos {
 
     public record MovementDto(
             Long id, Instant occurredAt, String kind, Long itemId, String itemName, BigDecimal qtyIn,
-            BigDecimal qtyOut, BigDecimal unitCost, String refType, Long refId, BigDecimal balanceAfter) {}
+            BigDecimal qtyOut, BigDecimal unitCost, String refType, Long refId, String refNo, BigDecimal balanceAfter) {}
 
     public record CountLineWrite(Long itemId, BigDecimal actualQty, String reason) {}
 
@@ -152,10 +153,40 @@ public final class Dtos {
             Instant reopenedAt,
             String reopenedByName) {}
 
-    public record PnlRow(String period, BigDecimal revenue, BigDecimal cogs, BigDecimal gross,
-            BigDecimal expenses, BigDecimal net, boolean closed) {}
+    public record PnlDayRow(
+            String date,
+            BigDecimal revenue,
+            BigDecimal cogs,
+            BigDecimal gross,
+            BigDecimal expenses,
+            BigDecimal net) {}
 
-    public record CashRow(Instant at, String label, BigDecimal in, BigDecimal out, BigDecimal balance) {}
+    public record PnlWeekRow(
+            String key,
+            String label,
+            String fromDate,
+            String toDate,
+            BigDecimal revenue,
+            BigDecimal cogs,
+            BigDecimal gross,
+            BigDecimal expenses,
+            BigDecimal net,
+            List<PnlDayRow> days) {}
+
+    public record PnlRow(
+            String period,
+            BigDecimal revenue,
+            BigDecimal cogs,
+            BigDecimal gross,
+            BigDecimal expenses,
+            BigDecimal net,
+            boolean closed,
+            List<PnlWeekRow> weeks) {}
+
+    public record CashRow(
+            Instant at, String label, BigDecimal in, BigDecimal out, BigDecimal balance,
+            String refType, Long refId, String refNo,
+            String targetType, Long targetId, String targetRef) {}
 
     public record CashReport(BigDecimal opening, BigDecimal closing, List<CashRow> rows) {}
 

@@ -8,4 +8,6 @@ public interface ExpenseRepository extends JpaRepository<Expense, Long> {
     List<Expense> findAllByOrderByOccurredAtDesc();
 
     List<Expense> findByReversedOfId(Long reversedOfId);
+
+    boolean existsByTypeId(Long typeId);
 }

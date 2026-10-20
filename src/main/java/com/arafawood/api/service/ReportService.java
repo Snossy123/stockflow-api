@@ -12,7 +12,9 @@ import com.arafawood.api.dto.Dtos.AgingReport;
 import com.arafawood.api.dto.Dtos.CashReport;
 import com.arafawood.api.dto.Dtos.CashRow;
 import com.arafawood.api.dto.Dtos.ItemProfitRow;
+import com.arafawood.api.dto.Dtos.PnlDayRow;
 import com.arafawood.api.dto.Dtos.PnlRow;
+import com.arafawood.api.dto.Dtos.PnlWeekRow;
 import com.arafawood.api.dto.Dtos.ReorderRow;
 import com.arafawood.api.repo.CustomerRepository;
 import com.arafawood.api.repo.ExpenseRepository;
@@ -83,54 +85,234 @@ public class ReportService {
     }
 
     @Transactional(readOnly = true)
-    public List<PnlRow> pnl() {
+    public List<PnlRow> pnl(LocalDate from, LocalDate to) {
         currentUser.require("reports", "view");
-        YearMonth now = YearMonth.now(CAIRO);
-        List<PnlRow> rows = new ArrayList<>();
-        for (int i = 5; i >= 0; i--) {
-            YearMonth month = now.minusMonths(i);
-            LocalDate start = month.atDay(1);
-            LocalDate end = month.atEndOfMonth();
-            BigDecimal revenue = BigDecimal.ZERO;
-            BigDecimal cogs = BigDecimal.ZERO;
-            for (SalesOrder so : sales.findAll()) {
-                if (!"approved".equals(so.getStatus())) {
-                    continue;
-                }
-                LocalDate posted = so.getPostingDate() != null ? so.getPostingDate() : so.getDocDate();
-                if (!inRange(posted, start, end)) {
-                    continue;
-                }
-                revenue = revenue.add(so.getTotal());
-                cogs = cogs.add(so.getCogs());
+        List<SalesOrder> approvedSales = sales.findAll().stream()
+                .filter(so -> "approved".equals(so.getStatus()))
+                .toList();
+        List<Expense> approvedExpenses = expenses.findAll().stream()
+                .filter(e -> "approved".equals(e.getStatus()))
+                .toList();
+        if (from == null && to == null) {
+            YearMonth now = YearMonth.now(CAIRO);
+            List<PnlRow> rows = new ArrayList<>();
+            for (int i = 5; i >= 0; i--) {
+                YearMonth month = now.minusMonths(i);
+                rows.add(buildMonthPnlRow(month, month.atDay(1), month.atEndOfMonth(), approvedSales, approvedExpenses));
             }
-            BigDecimal monthExpenses = expenses.findAll().stream()
-                    .filter(e -> "approved".equals(e.getStatus()))
-                    .filter(e -> inRange(e.getOccurredAt().atZone(CAIRO).toLocalDate(), start, end))
-                    .map(Expense::getAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal gross = revenue.subtract(cogs);
-            rows.add(new PnlRow(
-                    month.toString(),
-                    revenue,
-                    cogs,
-                    gross,
-                    monthExpenses,
-                    gross.subtract(monthExpenses),
-                    periodLock.isClosed(month)));
+            return rows;
+        }
+        LocalDate today = LocalDate.now(CAIRO);
+        LocalDate start = from != null ? from : (to != null ? to : today);
+        LocalDate end = to != null ? to : start;
+        if (end.isBefore(start)) {
+            LocalDate tmp = start;
+            start = end;
+            end = tmp;
+        }
+        long days = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
+        List<PnlRow> rows = new ArrayList<>();
+        if (days > 62) {
+            YearMonth ymStart = YearMonth.from(start);
+            YearMonth ymEnd = YearMonth.from(end);
+            for (YearMonth ym = ymStart; !ym.isAfter(ymEnd); ym = ym.plusMonths(1)) {
+                LocalDate sliceStart = ym.atDay(1).isBefore(start) ? start : ym.atDay(1);
+                LocalDate sliceEnd = ym.atEndOfMonth().isAfter(end) ? end : ym.atEndOfMonth();
+                rows.add(buildMonthPnlRow(ym, sliceStart, sliceEnd, approvedSales, approvedExpenses));
+            }
+        } else {
+            for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
+                PnlRow row = buildSlicePnlRow(d.toString(), d, d, periodLock.isClosed(YearMonth.from(d)), approvedSales, approvedExpenses);
+                if (days == 1
+                        || row.revenue().compareTo(BigDecimal.ZERO) != 0
+                        || row.cogs().compareTo(BigDecimal.ZERO) != 0
+                        || row.expenses().compareTo(BigDecimal.ZERO) != 0) {
+                    rows.add(row);
+                }
+            }
         }
         return rows;
     }
 
+    private PnlRow buildMonthPnlRow(
+            YearMonth month,
+            LocalDate start,
+            LocalDate end,
+            List<SalesOrder> approvedSales,
+            List<Expense> approvedExpenses) {
+        PnlRow base = buildSlicePnlRow(month.toString(), start, end, periodLock.isClosed(month), approvedSales, approvedExpenses);
+        List<PnlWeekRow> weeks = buildMonthWeeks(month, start, end, approvedSales, approvedExpenses);
+        return new PnlRow(
+                base.period(),
+                base.revenue(),
+                base.cogs(),
+                base.gross(),
+                base.expenses(),
+                base.net(),
+                base.closed(),
+                weeks);
+    }
+
+    private PnlRow buildSlicePnlRow(
+            String label,
+            LocalDate start,
+            LocalDate end,
+            boolean closed,
+            List<SalesOrder> approvedSales,
+            List<Expense> approvedExpenses) {
+        BigDecimal revenue = BigDecimal.ZERO;
+        BigDecimal cogs = BigDecimal.ZERO;
+        for (SalesOrder so : approvedSales) {
+            LocalDate posted = so.getPostingDate() != null ? so.getPostingDate() : so.getDocDate();
+            if (!inRange(posted, start, end)) {
+                continue;
+            }
+            revenue = revenue.add(so.getTotal());
+            cogs = cogs.add(so.getCogs());
+        }
+        BigDecimal sliceExpenses = approvedExpenses.stream()
+                .filter(e -> inRange(e.getOccurredAt().atZone(CAIRO).toLocalDate(), start, end))
+                .map(Expense::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal gross = revenue.subtract(cogs);
+        return new PnlRow(
+                label,
+                revenue,
+                cogs,
+                gross,
+                sliceExpenses,
+                gross.subtract(sliceExpenses),
+                closed,
+                List.of());
+    }
+
+    private List<PnlWeekRow> buildMonthWeeks(
+            YearMonth month,
+            LocalDate clipStart,
+            LocalDate clipEnd,
+            List<SalesOrder> approvedSales,
+            List<Expense> approvedExpenses) {
+        int endDay = month.lengthOfMonth();
+        int[][] ranges = {
+                {1, Math.min(7, endDay)},
+                {8, Math.min(14, endDay)},
+                {15, Math.min(21, endDay)},
+                {22, endDay}
+        };
+        String[] labels = {"الأسبوع ١", "الأسبوع ٢", "الأسبوع ٣", "الأسبوع ٤"};
+        List<PnlWeekRow> weeks = new ArrayList<>();
+        for (int idx = 0; idx < ranges.length; idx++) {
+            int fromDay = ranges[idx][0];
+            int toDay = ranges[idx][1];
+            if (fromDay > toDay) {
+                continue;
+            }
+            LocalDate weekStart = month.atDay(fromDay);
+            LocalDate weekEnd = month.atDay(toDay);
+            if (weekEnd.isBefore(clipStart) || weekStart.isAfter(clipEnd)) {
+                continue;
+            }
+            LocalDate effectiveStart = weekStart.isBefore(clipStart) ? clipStart : weekStart;
+            LocalDate effectiveEnd = weekEnd.isAfter(clipEnd) ? clipEnd : weekEnd;
+            List<PnlDayRow> dayRows = new ArrayList<>();
+            BigDecimal weekRevenue = BigDecimal.ZERO;
+            BigDecimal weekCogs = BigDecimal.ZERO;
+            BigDecimal weekExpenses = BigDecimal.ZERO;
+
+            for (LocalDate day = effectiveStart; !day.isAfter(effectiveEnd); day = day.plusDays(1)) {
+                final LocalDate targetDay = day;
+                BigDecimal dayRevenue = BigDecimal.ZERO;
+                BigDecimal dayCogs = BigDecimal.ZERO;
+                for (SalesOrder so : approvedSales) {
+                    LocalDate posted = so.getPostingDate() != null ? so.getPostingDate() : so.getDocDate();
+                    if (targetDay.equals(posted)) {
+                        dayRevenue = dayRevenue.add(so.getTotal());
+                        dayCogs = dayCogs.add(so.getCogs());
+                    }
+                }
+                BigDecimal dayExpenses = approvedExpenses.stream()
+                        .filter(e -> targetDay.equals(e.getOccurredAt().atZone(CAIRO).toLocalDate()))
+                        .map(Expense::getAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+                if (dayRevenue.compareTo(BigDecimal.ZERO) == 0
+                        && dayCogs.compareTo(BigDecimal.ZERO) == 0
+                        && dayExpenses.compareTo(BigDecimal.ZERO) == 0) {
+                    continue;
+                }
+
+                BigDecimal dayGross = dayRevenue.subtract(dayCogs);
+                BigDecimal dayNet = dayGross.subtract(dayExpenses);
+                dayRows.add(new PnlDayRow(
+                        targetDay.toString(),
+                        dayRevenue,
+                        dayCogs,
+                        dayGross,
+                        dayExpenses,
+                        dayNet));
+
+                weekRevenue = weekRevenue.add(dayRevenue);
+                weekCogs = weekCogs.add(dayCogs);
+                weekExpenses = weekExpenses.add(dayExpenses);
+            }
+
+            if (dayRows.isEmpty()) {
+                continue;
+            }
+
+            BigDecimal weekGross = weekRevenue.subtract(weekCogs);
+            BigDecimal weekNet = weekGross.subtract(weekExpenses);
+            weeks.add(new PnlWeekRow(
+                    month + "-W" + (idx + 1),
+                    labels[idx],
+                    weekStart.toString(),
+                    weekEnd.toString(),
+                    weekRevenue,
+                    weekCogs,
+                    weekGross,
+                    weekExpenses,
+                    weekNet,
+                    dayRows));
+        }
+        return weeks;
+    }
+
     @Transactional(readOnly = true)
-    public CashReport cash(LocalDate day) {
+    public CashReport cash(LocalDate from, LocalDate to) {
         currentUser.require("reports", "view");
-        LocalDate date = day == null ? LocalDate.now(CAIRO) : day;
-        Instant start = date.atStartOfDay(CAIRO).toInstant();
-        Instant end = date.plusDays(1).atStartOfDay(CAIRO).toInstant();
+        LocalDate today = LocalDate.now(CAIRO);
+        LocalDate startDate = from != null ? from : (to != null ? to : today);
+        LocalDate endDate = to != null ? to : startDate;
+        if (endDate.isBefore(startDate)) {
+            LocalDate tmp = startDate;
+            startDate = endDate;
+            endDate = tmp;
+        }
+        Instant start = startDate.atStartOfDay(CAIRO).toInstant();
+        Instant end = endDate.plusDays(1).atStartOfDay(CAIRO).toInstant();
         BigDecimal opening = cashBefore(start);
         BigDecimal running = opening;
         List<CashRow> rows = new ArrayList<>();
+        Map<String, SalesOrder> salesByNo = new HashMap<>();
+        for (SalesOrder so : sales.findAll()) {
+            if (so.getNo() != null) {
+                salesByNo.put(so.getNo(), so);
+            }
+        }
+        Map<String, PurchaseOrder> purchasesByNo = new HashMap<>();
+        for (PurchaseOrder po : purchases.findAll()) {
+            if (po.getNo() != null) {
+                purchasesByNo.put(po.getNo(), po);
+            }
+        }
+        Map<Long, String> customerNames = new HashMap<>();
+        for (var c : customers.findAll()) {
+            customerNames.put(c.getId(), c.getName());
+        }
+        Map<Long, String> supplierNames = new HashMap<>();
+        for (var s : suppliers.findAll()) {
+            supplierNames.put(s.getId(), s.getName());
+        }
         List<Payment> dayPayments = payments.findAll().stream()
                 .filter(p -> !p.getOccurredAt().isBefore(start) && p.getOccurredAt().isBefore(end))
                 .sorted(Comparator.comparing(Payment::getOccurredAt))
@@ -140,7 +322,64 @@ public class ReportService {
             BigDecimal in = inflow ? payment.getAmount() : BigDecimal.ZERO;
             BigDecimal out = inflow ? BigDecimal.ZERO : payment.getAmount();
             running = running.add(in).subtract(out);
-            rows.add(new CashRow(payment.getOccurredAt(), (inflow ? "استلام " : "دفع ") + nz(payment.getRef()), in, out, running));
+            String ref = nz(payment.getRef()).trim();
+            String refType = null;
+            Long refId = null;
+            String refNo = null;
+            String targetType;
+            Long targetId;
+            String targetRef;
+            String partyName = inflow
+                    ? customerNames.getOrDefault(payment.getPartyId(), "")
+                    : supplierNames.getOrDefault(payment.getPartyId(), "");
+            String label;
+            if (inflow) {
+                String candidateNo = ref.startsWith("مرتجع ") ? ref.substring("مرتجع ".length()).trim() : ref;
+                SalesOrder matched = salesByNo.get(candidateNo);
+                if (matched != null) {
+                    refType = "sale";
+                    refId = matched.getId();
+                    refNo = matched.getNo();
+                    targetType = "sale";
+                    targetId = matched.getId();
+                    targetRef = matched.getNo();
+                    label = "استلام " + ref + (partyName.isEmpty() ? "" : " — " + partyName);
+                } else {
+                    targetType = "customer";
+                    targetId = payment.getPartyId();
+                    targetRef = ref.isEmpty() ? null : ref;
+                    label = "استلام" + (partyName.isEmpty() ? "" : " من " + partyName) + (ref.isEmpty() ? "" : " (" + ref + ")");
+                }
+            } else {
+                String candidateNo = ref.startsWith("عكس ") ? ref.substring("عكس ".length()).trim() : ref;
+                PurchaseOrder matched = purchasesByNo.get(candidateNo);
+                if (matched != null) {
+                    refType = "purchase";
+                    refId = matched.getId();
+                    refNo = matched.getNo();
+                    targetType = "purchase";
+                    targetId = matched.getId();
+                    targetRef = matched.getNo();
+                    label = "دفع " + ref + (partyName.isEmpty() ? "" : " — " + partyName);
+                } else {
+                    targetType = "supplier";
+                    targetId = payment.getPartyId();
+                    targetRef = ref.isEmpty() ? null : ref;
+                    label = "دفع" + (partyName.isEmpty() ? "" : " لـ " + partyName) + (ref.isEmpty() ? "" : " (" + ref + ")");
+                }
+            }
+            rows.add(new CashRow(
+                    payment.getOccurredAt(),
+                    label,
+                    in,
+                    out,
+                    running,
+                    refType,
+                    refId,
+                    refNo,
+                    targetType,
+                    targetId,
+                    targetRef));
         }
         for (Expense expense : expenses.findAll()) {
             if (!"approved".equals(expense.getStatus())) {
@@ -153,7 +392,21 @@ public class ReportService {
                 continue;
             }
             running = running.subtract(expense.getAmount());
-            rows.add(new CashRow(expense.getOccurredAt(), "وارد " + expense.getType().getName(), BigDecimal.ZERO, expense.getAmount(), running));
+            String note = nz(expense.getNote()).trim();
+            String typeName = expense.getType().getName();
+            String expLabel = "مصروف " + typeName + (note.isEmpty() ? "" : " — " + note);
+            rows.add(new CashRow(
+                    expense.getOccurredAt(),
+                    expLabel,
+                    BigDecimal.ZERO,
+                    expense.getAmount(),
+                    running,
+                    "expense",
+                    expense.getId(),
+                    typeName,
+                    "expense",
+                    expense.getId(),
+                    note.isEmpty() ? typeName : note));
         }
         rows.sort(Comparator.comparing(CashRow::at));
         return new CashReport(opening, running, rows);
@@ -185,13 +438,27 @@ public class ReportService {
     }
 
     @Transactional(readOnly = true)
-    public List<ItemProfitRow> itemProfit() {
+    public List<ItemProfitRow> itemProfit(LocalDate from, LocalDate to) {
         currentUser.require("reports", "view");
+        LocalDate start = from;
+        LocalDate end = to;
+        if (start != null && end != null && end.isBefore(start)) {
+            LocalDate tmp = start;
+            start = end;
+            end = tmp;
+        }
         Map<Long, BigDecimal> revenue = new HashMap<>();
         Map<Long, BigDecimal> cost = new HashMap<>();
         Map<Long, String> names = new HashMap<>();
         for (SalesOrder so : sales.findAll()) {
             if (!"approved".equals(so.getStatus())) {
+                continue;
+            }
+            LocalDate posted = so.getPostingDate() != null ? so.getPostingDate() : so.getDocDate();
+            if (start != null && posted.isBefore(start)) {
+                continue;
+            }
+            if (end != null && posted.isAfter(end)) {
                 continue;
             }
             for (SalesOrderItem line : so.getItems()) {

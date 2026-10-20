@@ -10,6 +10,7 @@ import com.arafawood.api.dto.Dtos.IdName;
 import com.arafawood.api.dto.Dtos.ItemDto;
 import com.arafawood.api.dto.Dtos.ItemWrite;
 import com.arafawood.api.repo.CategoryRepository;
+import com.arafawood.api.repo.ExpenseRepository;
 import com.arafawood.api.repo.ExpenseTypeRepository;
 import com.arafawood.api.repo.ItemRepository;
 import com.arafawood.api.repo.UnitRepository;
@@ -27,6 +28,7 @@ public class CatalogService {
     private final CategoryRepository categories;
     private final UnitRepository units;
     private final ExpenseTypeRepository expenseTypes;
+    private final ExpenseRepository expenses;
     private final SettingService settings;
     private final StockService stock;
     private final CurrentUserService currentUser;
@@ -36,6 +38,7 @@ public class CatalogService {
             CategoryRepository categories,
             UnitRepository units,
             ExpenseTypeRepository expenseTypes,
+            ExpenseRepository expenses,
             SettingService settings,
             StockService stock,
             CurrentUserService currentUser) {
@@ -43,6 +46,7 @@ public class CatalogService {
         this.categories = categories;
         this.units = units;
         this.expenseTypes = expenseTypes;
+        this.expenses = expenses;
         this.settings = settings;
         this.stock = stock;
         this.currentUser = currentUser;
@@ -89,10 +93,41 @@ public class CatalogService {
     @Transactional
     public IdName createCategory(IdName write) {
         currentUser.require("settings", "create");
+        String name = requireName(write.name());
+        categories.findByName(name).ifPresent(existing -> {
+            throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+        });
         Category category = new Category();
-        category.setName(write.name());
+        category.setName(name);
         categories.save(category);
         return new IdName(category.getId(), category.getName());
+    }
+
+    @Transactional
+    public IdName updateCategory(Long id, IdName write) {
+        currentUser.require("settings", "create");
+        Category category = categories.findById(id)
+                .orElseThrow(() -> ApiException.notFound("التصنيف غير موجود"));
+        String name = requireName(write.name());
+        categories.findByName(name).ifPresent(existing -> {
+            if (!existing.getId().equals(id)) {
+                throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+            }
+        });
+        category.setName(name);
+        categories.save(category);
+        return new IdName(category.getId(), category.getName());
+    }
+
+    @Transactional
+    public void deleteCategory(Long id) {
+        currentUser.require("settings", "create");
+        Category category = categories.findById(id)
+                .orElseThrow(() -> ApiException.notFound("التصنيف غير موجود"));
+        if (items.existsByCategoryId(id)) {
+            throw ApiException.conflict("لا يمكن حذف التصنيف لوجود أصناف مرتبطة به", "CATEGORY_IN_USE");
+        }
+        categories.delete(category);
     }
 
     @Transactional(readOnly = true)
@@ -104,10 +139,41 @@ public class CatalogService {
     @Transactional
     public IdName createUnit(IdName write) {
         currentUser.require("settings", "create");
+        String name = requireName(write.name());
+        units.findByName(name).ifPresent(existing -> {
+            throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+        });
         Unit unit = new Unit();
-        unit.setName(write.name());
+        unit.setName(name);
         units.save(unit);
         return new IdName(unit.getId(), unit.getName());
+    }
+
+    @Transactional
+    public IdName updateUnit(Long id, IdName write) {
+        currentUser.require("settings", "create");
+        Unit unit = units.findById(id)
+                .orElseThrow(() -> ApiException.notFound("الوحدة غير موجودة"));
+        String name = requireName(write.name());
+        units.findByName(name).ifPresent(existing -> {
+            if (!existing.getId().equals(id)) {
+                throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+            }
+        });
+        unit.setName(name);
+        units.save(unit);
+        return new IdName(unit.getId(), unit.getName());
+    }
+
+    @Transactional
+    public void deleteUnit(Long id) {
+        currentUser.require("settings", "create");
+        Unit unit = units.findById(id)
+                .orElseThrow(() -> ApiException.notFound("الوحدة غير موجودة"));
+        if (items.existsByUnitId(id)) {
+            throw ApiException.conflict("لا يمكن حذف الوحدة لوجود أصناف مرتبطة بها", "UNIT_IN_USE");
+        }
+        units.delete(unit);
     }
 
     @Transactional(readOnly = true)
@@ -121,11 +187,50 @@ public class CatalogService {
     @Transactional
     public ExpenseTypeDto createExpenseType(ExpenseTypeDto write) {
         currentUser.require("settings", "create");
+        String name = requireName(write.name());
+        expenseTypes.findByName(name).ifPresent(existing -> {
+            throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+        });
         ExpenseType type = new ExpenseType();
-        type.setName(write.name());
+        type.setName(name);
         type.setAffectsStock(write.affectsStock());
         expenseTypes.save(type);
         return new ExpenseTypeDto(type.getId(), type.getName(), type.isAffectsStock());
+    }
+
+    @Transactional
+    public ExpenseTypeDto updateExpenseType(Long id, ExpenseTypeDto write) {
+        currentUser.require("settings", "create");
+        ExpenseType type = expenseTypes.findById(id)
+                .orElseThrow(() -> ApiException.notFound("نوع المصروف غير موجود"));
+        String name = requireName(write.name());
+        expenseTypes.findByName(name).ifPresent(existing -> {
+            if (!existing.getId().equals(id)) {
+                throw ApiException.conflict("الاسم مسجل بالفعل", "DUPLICATE_NAME");
+            }
+        });
+        type.setName(name);
+        type.setAffectsStock(write.affectsStock());
+        expenseTypes.save(type);
+        return new ExpenseTypeDto(type.getId(), type.getName(), type.isAffectsStock());
+    }
+
+    @Transactional
+    public void deleteExpenseType(Long id) {
+        currentUser.require("settings", "create");
+        ExpenseType type = expenseTypes.findById(id)
+                .orElseThrow(() -> ApiException.notFound("نوع المصروف غير موجود"));
+        if (expenses.existsByTypeId(id)) {
+            throw ApiException.conflict("لا يمكن حذف نوع المصروف لوجود مصروفات مسجلة به", "EXPENSE_TYPE_IN_USE");
+        }
+        expenseTypes.delete(type);
+    }
+
+    private String requireName(String name) {
+        if (name == null || name.isBlank()) {
+            throw ApiException.badRequest("الاسم مطلوب");
+        }
+        return name.trim();
     }
 
     @Transactional(readOnly = true)

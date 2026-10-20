@@ -15,5 +15,6 @@ public final class AuthDtos {
             String username,
             String roleCode,
             String roleName,
-            List<PermissionDto> permissions) {}
+            List<PermissionDto> permissions,
+            int sessionTimeoutMinutes) {}
 }
